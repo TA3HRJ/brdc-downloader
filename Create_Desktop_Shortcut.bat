@@ -1,8 +1,7 @@
 @echo off
-:: Masaüstünde BRDC İndir kısayolu oluşturur
-set "TARGET=%~dp0BRDC_Indir.bat"
-set "SHORTCUT=%USERPROFILE%\Desktop\BRDC İndir.lnk"
-set "ICON=%~dp0brdc.ico"
+:: Creates a Desktop shortcut for BRDC Downloader
+set "TARGET=%~dp0BRDC_Downloader.bat"
+set "SHORTCUT=%USERPROFILE%\Desktop\BRDC Downloader.lnk"
 
 powershell -NoProfile -Command ^
   "$ws = New-Object -ComObject WScript.Shell; ^
@@ -12,5 +11,5 @@ powershell -NoProfile -Command ^
    $s.Description = 'BRDC GPS Ephemeris Downloader'; ^
    $s.Save()"
 
-echo Masaustu kisayolu olusturuldu: %SHORTCUT%
+echo Desktop shortcut created: %SHORTCUT%
 pause

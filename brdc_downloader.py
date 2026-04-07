@@ -22,7 +22,7 @@ import requests
 import gzip
 import shutil
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import calendar
 import queue
 
@@ -46,7 +46,6 @@ class EarthdataSession(requests.Session):
         if "Authorization" in headers:
             orig_host = requests.utils.urlparse(response.request.url).hostname
             redir_host = requests.utils.urlparse(prepared_request.url).hostname
-            # Remove auth header when leaving earthdata domain unless it IS earthdata
             if (
                 orig_host != redir_host
                 and redir_host != EARTHDATA_HOST
@@ -79,7 +78,7 @@ def date_to_doy(year: int, month: int, day: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Downloader worker (runs in thread)
+# Downloader worker (runs in background thread)
 # ---------------------------------------------------------------------------
 def download_worker(
     username: str,
@@ -92,7 +91,7 @@ def download_worker(
     log_q: queue.Queue,
     prog_q: queue.Queue,
 ):
-    """Download file in background thread, post log/progress to queues."""
+    """Download file in background thread; post log messages and progress to queues."""
 
     def log(msg, tag="info"):
         log_q.put((msg, tag))
@@ -101,10 +100,10 @@ def download_worker(
         prog_q.put(val)
 
     gz_path = os.path.join(dest_dir, fname)
-    final_name = fname[:-3] if fname.endswith(".gz") else fname  # strip .gz
+    final_name = fname[:-3] if fname.endswith(".gz") else fname
     final_path = os.path.join(dest_dir, final_name)
 
-    log(f"Bağlanılıyor: {url}")
+    log(f"Connecting: {url}")
 
     try:
         session = EarthdataSession(username, password)
@@ -112,19 +111,19 @@ def download_worker(
 
         with session.get(url, stream=True, timeout=60) as resp:
             if resp.status_code == 401:
-                log("Kimlik doğrulama hatası — kullanıcı adı/şifre yanlış.", "error")
+                log("Authentication failed — check username and password.", "error")
                 prog(-1)
                 return
             if resp.status_code == 404:
-                log(f"Dosya sunucuda bulunamadı (404): {fname}", "error")
-                log("İpucu: Bu tarih için RINEX3 formatını deneyin.", "warn")
+                log(f"File not found on server (404): {fname}", "error")
+                log("Tip: try RINEX 3 format for this date.", "warn")
                 prog(-1)
                 return
             resp.raise_for_status()
 
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
-            log(f"İndiriliyor: {fname}  ({total // 1024 if total else '?'} KB)")
+            log(f"Downloading: {fname}  ({total // 1024 if total else '?'} KB)")
 
             with open(gz_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
@@ -135,10 +134,10 @@ def download_worker(
                             prog(int(downloaded * 100 / total))
 
         prog(100)
-        log(f"İndirildi: {gz_path}", "ok")
+        log(f"Saved: {gz_path}", "ok")
 
         if decompress:
-            log("Sıkıştırma açılıyor...")
+            log("Decompressing .gz ...")
             try:
                 with gzip.open(gz_path, "rb") as f_in, open(final_path, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
@@ -146,23 +145,23 @@ def download_worker(
                 if rename_brdc:
                     brdc_path = os.path.splitext(final_path)[0] + ".brdc"
                     os.replace(final_path, brdc_path)
-                    log(f"Tamamlandı: {brdc_path}", "ok")
+                    log(f"Done: {brdc_path}", "ok")
                 else:
-                    log(f"Tamamlandı: {final_path}", "ok")
+                    log(f"Done: {final_path}", "ok")
             except Exception as e:
-                log(f"Sıkıştırma açma hatası: {e}", "error")
-                log(f"Ham .gz dosyası saklandı: {gz_path}", "warn")
+                log(f"Decompression error: {e}", "error")
+                log(f"Raw .gz file kept: {gz_path}", "warn")
         else:
-            log(f"Tamamlandı (.gz): {gz_path}", "ok")
+            log(f"Done (.gz kept): {gz_path}", "ok")
 
     except requests.exceptions.ConnectionError:
-        log("Bağlantı hatası — internet bağlantısını kontrol edin.", "error")
+        log("Connection error — check your internet connection.", "error")
         prog(-1)
     except requests.exceptions.Timeout:
-        log("Zaman aşımı — sunucu yanıt vermedi.", "error")
+        log("Timeout — server did not respond.", "error")
         prog(-1)
     except Exception as e:
-        log(f"Beklenmeyen hata: {e}", "error")
+        log(f"Unexpected error: {e}", "error")
         prog(-1)
 
 
@@ -192,16 +191,16 @@ class BRDCApp(tk.Tk):
         frm.grid(row=0, column=0, sticky="nsew")
 
         # ── Credentials ──────────────────────────────────────────────
-        cred_lf = ttk.LabelFrame(frm, text=" NASA Earthdata Giriş Bilgileri ", padding=6)
+        cred_lf = ttk.LabelFrame(frm, text=" NASA Earthdata Credentials ", padding=6)
         cred_lf.grid(row=0, column=0, columnspan=2, sticky="ew", **pad)
 
-        ttk.Label(cred_lf, text="Kullanıcı Adı:").grid(row=0, column=0, sticky="w")
+        ttk.Label(cred_lf, text="Username:").grid(row=0, column=0, sticky="w")
         self._user_var = tk.StringVar()
         ttk.Entry(cred_lf, textvariable=self._user_var, width=28).grid(
             row=0, column=1, sticky="ew", padx=(4, 0)
         )
 
-        ttk.Label(cred_lf, text="Şifre:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(cred_lf, text="Password:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._pass_var = tk.StringVar()
         self._pass_entry = ttk.Entry(
             cred_lf, textvariable=self._pass_var, show="*", width=28
@@ -211,18 +210,18 @@ class BRDCApp(tk.Tk):
         self._show_pass = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             cred_lf,
-            text="Şifreyi göster",
+            text="Show password",
             variable=self._show_pass,
             command=self._toggle_pass,
         ).grid(row=2, column=1, sticky="w", pady=(2, 0))
 
         # ── Date selection ────────────────────────────────────────────
-        date_lf = ttk.LabelFrame(frm, text=" Tarih Seçimi ", padding=6)
+        date_lf = ttk.LabelFrame(frm, text=" Date ", padding=6)
         date_lf.grid(row=1, column=0, columnspan=2, sticky="ew", **pad)
 
         today = date.today()
 
-        ttk.Label(date_lf, text="Yıl:").grid(row=0, column=0, sticky="w")
+        ttk.Label(date_lf, text="Year:").grid(row=0, column=0, sticky="w")
         self._year_var = tk.IntVar(value=today.year)
         ttk.Spinbox(
             date_lf,
@@ -233,7 +232,7 @@ class BRDCApp(tk.Tk):
             command=self._update_doy_max,
         ).grid(row=0, column=1, sticky="w", padx=(4, 12))
 
-        ttk.Label(date_lf, text="Ay:").grid(row=0, column=2, sticky="w")
+        ttk.Label(date_lf, text="Month:").grid(row=0, column=2, sticky="w")
         self._month_var = tk.IntVar(value=today.month)
         self._month_spin = ttk.Spinbox(
             date_lf,
@@ -245,7 +244,7 @@ class BRDCApp(tk.Tk):
         )
         self._month_spin.grid(row=0, column=3, sticky="w", padx=(4, 12))
 
-        ttk.Label(date_lf, text="Gün:").grid(row=0, column=4, sticky="w")
+        ttk.Label(date_lf, text="Day:").grid(row=0, column=4, sticky="w")
         self._day_var = tk.IntVar(value=today.day)
         self._day_spin = ttk.Spinbox(
             date_lf,
@@ -259,17 +258,18 @@ class BRDCApp(tk.Tk):
 
         ttk.Label(date_lf, text="DOY:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._doy_var = tk.IntVar()
-        self._doy_label = ttk.Label(date_lf, textvariable=self._doy_var, width=4)
-        self._doy_label.grid(row=1, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(date_lf, textvariable=self._doy_var, width=4).grid(
+            row=1, column=1, sticky="w", pady=(4, 0)
+        )
 
-        ttk.Button(date_lf, text="Bugün", command=self._set_today).grid(
+        ttk.Button(date_lf, text="Today", command=self._set_today).grid(
             row=1, column=5, sticky="e", pady=(4, 0)
         )
 
         self._update_doy()
 
         # ── Format & options ─────────────────────────────────────────
-        opt_lf = ttk.LabelFrame(frm, text=" Format ve Seçenekler ", padding=6)
+        opt_lf = ttk.LabelFrame(frm, text=" Format & Options ", padding=6)
         opt_lf.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
 
         ttk.Label(opt_lf, text="Format:").grid(row=0, column=0, sticky="w")
@@ -285,7 +285,7 @@ class BRDCApp(tk.Tk):
         self._decomp_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             opt_lf,
-            text=".gz sıkıştırmasını aç",
+            text="Decompress .gz file",
             variable=self._decomp_var,
             command=self._on_decomp_toggle,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -293,20 +293,20 @@ class BRDCApp(tk.Tk):
         self._brdc_var = tk.BooleanVar(value=True)
         self._brdc_chk = ttk.Checkbutton(
             opt_lf,
-            text=".brdc uzantısıyla kaydet  (içerik aynı, sadece uzantı değişir)",
+            text="Save with .brdc extension  (same content, only extension changes)",
             variable=self._brdc_var,
         )
         self._brdc_chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ── Destination ───────────────────────────────────────────────
-        dest_lf = ttk.LabelFrame(frm, text=" Kayıt Konumu ", padding=6)
+        dest_lf = ttk.LabelFrame(frm, text=" Save Location ", padding=6)
         dest_lf.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
 
         self._dest_var = tk.StringVar(value=os.path.expanduser("~/Downloads"))
         ttk.Entry(dest_lf, textvariable=self._dest_var, width=38).grid(
             row=0, column=0, sticky="ew"
         )
-        ttk.Button(dest_lf, text="Gözat…", command=self._browse_dest).grid(
+        ttk.Button(dest_lf, text="Browse…", command=self._browse_dest).grid(
             row=0, column=1, padx=(4, 0)
         )
         dest_lf.columnconfigure(0, weight=1)
@@ -315,10 +315,10 @@ class BRDCApp(tk.Tk):
         btn_frm = ttk.Frame(frm)
         btn_frm.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
 
-        self._dl_btn = ttk.Button(btn_frm, text="İndir", command=self._start_download)
+        self._dl_btn = ttk.Button(btn_frm, text="Download", command=self._start_download)
         self._dl_btn.pack(side="left")
 
-        ttk.Button(btn_frm, text="Klasörü Aç", command=self._open_dest).pack(
+        ttk.Button(btn_frm, text="Open Folder", command=self._open_dest).pack(
             side="left", padx=(8, 0)
         )
 
@@ -329,7 +329,7 @@ class BRDCApp(tk.Tk):
         )
         self._progress.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
 
-        self._status_var = tk.StringVar(value="Hazır")
+        self._status_var = tk.StringVar(value="Ready")
         ttk.Label(frm, textvariable=self._status_var, foreground="gray").grid(
             row=6, column=0, columnspan=2, sticky="w", padx=8
         )
@@ -391,13 +391,15 @@ class BRDCApp(tk.Tk):
 
     def _update_doy(self):
         try:
-            doy = date_to_doy(self._year_var.get(), self._month_var.get(), self._day_var.get())
+            doy = date_to_doy(
+                self._year_var.get(), self._month_var.get(), self._day_var.get()
+            )
             self._doy_var.set(doy)
         except ValueError:
             self._doy_var.set(0)
 
     def _browse_dest(self):
-        path = filedialog.askdirectory(title="Kayıt klasörünü seçin")
+        path = filedialog.askdirectory(title="Select save folder")
         if path:
             self._dest_var.set(path)
 
@@ -406,7 +408,7 @@ class BRDCApp(tk.Tk):
         if os.path.isdir(path):
             os.startfile(path)
         else:
-            messagebox.showwarning("Uyarı", "Klasör bulunamadı.")
+            messagebox.showwarning("Warning", "Folder not found.")
 
     def _log(self, msg: str, tag: str = "info"):
         self._log_text.config(state="normal")
@@ -422,13 +424,13 @@ class BRDCApp(tk.Tk):
     # ------------------------------------------------------------------
     def _start_download(self):
         if self._worker and self._worker.is_alive():
-            messagebox.showinfo("Bilgi", "Zaten bir indirme işlemi sürüyor.")
+            messagebox.showinfo("Info", "A download is already in progress.")
             return
 
         username = self._user_var.get().strip()
         password = self._pass_var.get()
         if not username or not password:
-            messagebox.showerror("Hata", "Kullanıcı adı ve şifre gereklidir.")
+            messagebox.showerror("Error", "Username and password are required.")
             return
 
         dest = self._dest_var.get().strip()
@@ -436,7 +438,7 @@ class BRDCApp(tk.Tk):
             try:
                 os.makedirs(dest, exist_ok=True)
             except Exception as e:
-                messagebox.showerror("Hata", f"Klasör oluşturulamadı:\n{e}")
+                messagebox.showerror("Error", f"Could not create folder:\n{e}")
                 return
 
         year = self._year_var.get()
@@ -445,7 +447,7 @@ class BRDCApp(tk.Tk):
         try:
             doy = date_to_doy(year, month, day)
         except ValueError as e:
-            messagebox.showerror("Tarih Hatası", str(e))
+            messagebox.showerror("Date Error", str(e))
             return
 
         fmt_key = self._fmt_var.get()
@@ -456,10 +458,10 @@ class BRDCApp(tk.Tk):
             url, fname = build_url_rinex3(year, doy)
 
         self._prog_var.set(0)
-        self._set_status(f"İndiriliyor: {fname}")
+        self._set_status(f"Downloading: {fname}")
         self._dl_btn.config(state="disabled")
         self._log(f"\n── {datetime.now().strftime('%H:%M:%S')} ─────────────────────────────────")
-        self._log(f"Tarih: {year}-{month:02d}-{day:02d}  DOY:{doy}  Format:{fmt_key}")
+        self._log(f"Date: {year}-{month:02d}-{day:02d}  DOY:{doy}  Format:{fmt_key}")
 
         self._worker = threading.Thread(
             target=download_worker,
@@ -488,13 +490,12 @@ class BRDCApp(tk.Tk):
             while True:
                 val = self._prog_q.get_nowait()
                 if val < 0:
-                    # Error sentinel
                     self._prog_var.set(0)
-                    self._set_status("Hata — log panelini kontrol edin.")
+                    self._set_status("Error — see log panel.")
                     self._dl_btn.config(state="normal")
                 elif val == 100:
                     self._prog_var.set(100)
-                    self._set_status("Tamamlandı.")
+                    self._set_status("Done.")
                     self._dl_btn.config(state="normal")
                 else:
                     self._prog_var.set(val)
