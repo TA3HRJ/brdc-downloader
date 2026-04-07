@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.brdc
+*.gz
+*.YYn
+*.26n
+*.25n
+brdc_error.log
