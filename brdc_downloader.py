@@ -375,7 +375,11 @@ class BRDCApp(tk.Tk):
 
         # gps-sdr-sim.exe
         ttk.Label(sim_lf, text="gps-sdr-sim:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        self._exe_var = tk.StringVar(value="gps-sdr-sim.exe")
+        _default_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "gps-sdr-sim", "gps-sdr-sim.exe")
+        _default_exe = os.path.normpath(_default_exe) if os.path.isfile(
+            os.path.normpath(_default_exe)) else "gps-sdr-sim.exe"
+        self._exe_var = tk.StringVar(value=_default_exe)
         self._exe_entry = ttk.Entry(sim_lf, textvariable=self._exe_var, width=30)
         self._exe_entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(4, 0), pady=(6, 0))
         self._exe_btn = ttk.Button(sim_lf, text="Browse…", command=self._browse_exe)
