@@ -1,5 +1,11 @@
 # BRDC Ephemeris Downloader
 
+> **⚠ Legal Warning**
+> The GPS-SIM file generation feature is intended solely for **experimental and educational purposes** in a controlled RF environment (e.g. Faraday cage, shielded lab).
+> Broadcasting GPS signals — even simulated ones — **may be illegal in your jurisdiction** and can interfere with navigation systems, aviation, and emergency services.
+> You are solely responsible for ensuring compliance with all applicable local laws and regulations before use.
+> The authors of this software accept no liability for any misuse.
+
 A Windows GUI application that downloads GPS broadcast ephemeris (BRDC) files from [NASA CDDIS](https://cddis.nasa.gov/archive/gnss/data/daily/) and optionally generates **PortaPack Mayhem GPS-SIM** files (`.C8` + `.TXT`).
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
