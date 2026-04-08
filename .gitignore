@@ -5,4 +5,7 @@ __pycache__/
 *.YYn
 *.26n
 *.25n
+*.C8
 brdc_error.log
+BRDC Archive/
+BRDC_Archive/
