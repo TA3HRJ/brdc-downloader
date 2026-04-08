@@ -424,6 +424,15 @@ class BRDCApp(tk.Tk):
         ttk.Label(sim_lf, text="1575.420 MHz  (GPS L1, fixed)",
                   foreground="gray").grid(row=5, column=3, sticky="w", pady=(4, 0))
 
+        # Legal warning label
+        warn_text = (
+            "⚠  Broadcasting GPS signals may be illegal in your jurisdiction and can\n"
+            "    interfere with navigation systems. Use only in a shielded RF environment."
+        )
+        ttk.Label(sim_lf, text=warn_text, foreground="#ffdd44",
+                  justify="left", wraplength=430
+                  ).grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
         self._sim_widgets = [
             self._exe_entry, self._exe_btn,
             self._lat_entry, self._lon_entry,
