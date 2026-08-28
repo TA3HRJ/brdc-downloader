@@ -38,3 +38,17 @@ bitirmeden önce `docs/HANDOFF.md`'yi güncelle: nerede kalındı, ne açık kal
 düşüldü ve neden. Dosya yoksa oluştur.
 
 Sohbet geçmişi kalıcı değildir. Repoda yazılı olmayan her şey oturumla birlikte gider.
+
+## Git kimliği
+
+Bu depoda kimlik **yerel** olarak ayarlı (`.git/config`); makinede global `.gitconfig` yok
+ve olmamalı:
+
+```
+user.name  = TA3HRJ
+user.email = TA3HRJ@users.noreply.github.com
+```
+
+Yerel olması kasıtlı — klasör başka bir makineye taşındığında commit atmak için hiçbir
+kurulum gerekmiyor. Özel e-posta adresi kullanma; noreply adresi hem gerçek adresi gizler
+hem de commit'lerin GitHub hesabına düzgün atfedilmesini sağlar.
