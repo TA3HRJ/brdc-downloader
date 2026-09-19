@@ -45,8 +45,8 @@ Bu depoda kimlik **yerel** olarak ayarlı (`.git/config`); makinede global `.git
 ve olmamalı:
 
 ```
-user.name  = TA3HRJ
-user.email = TA3HRJ@users.noreply.github.com
+user.name  = TA3HX
+user.email = 136229226+TA3HRJ@users.noreply.github.com
 ```
 
 Yerel olması kasıtlı — klasör başka bir makineye taşındığında commit atmak için hiçbir
