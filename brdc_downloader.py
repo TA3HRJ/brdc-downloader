@@ -33,6 +33,11 @@ CDDIS_BASE    = "https://cddis.nasa.gov/archive/gnss/data/daily"
 EARTHDATA_HOST = "urs.earthdata.nasa.gov"
 GPS_L1_HZ     = 1575420000
 
+# Progress-queue messages: ints 0–100 move the bar, ("status", text) updates the
+# status line, and exactly one of these ends the job and re-enables the button.
+PROG_FAIL = -1
+PROG_DONE = "done"
+
 SAMPLE_RATES = {
     "2.6 MHz  (recommended)": 2600000,
     "2.5 MHz":                 2500000,
@@ -92,7 +97,7 @@ def gpssim_worker(
     output_prefix: str,
     dest_dir: str,
     log_q: queue.Queue,
-):
+) -> bool:
     def log(msg, tag="info"):
         log_q.put((msg, tag))
 
@@ -102,7 +107,7 @@ def gpssim_worker(
     if not os.path.isfile(exe_path):
         log(f"gps-sdr-sim not found: {exe_path}", "error")
         log("Download from: https://github.com/osqzss/gps-sdr-sim", "warn")
-        return
+        return False
 
     cmd = [
         exe_path,
@@ -132,7 +137,7 @@ def gpssim_worker(
 
         if proc.returncode != 0:
             log(f"gps-sdr-sim exited with code {proc.returncode}", "error")
-            return
+            return False
 
         # Write companion .TXT
         with open(txt_path, "w") as f:
@@ -141,9 +146,11 @@ def gpssim_worker(
 
         log(f"GPS-SIM done: {c8_path}", "ok")
         log(f"             {txt_path}", "ok")
+        return True
 
     except Exception as e:
         log(f"GPS-SIM error: {e}", "error")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +174,9 @@ def download_worker(
     def prog(val):
         prog_q.put(val)
 
+    def status(msg):
+        prog_q.put(("status", msg))
+
     gz_path    = os.path.join(dest_dir, fname)
     final_name = fname[:-3] if fname.endswith(".gz") else fname
     final_path = os.path.join(dest_dir, final_name)
@@ -180,12 +190,12 @@ def download_worker(
         with session.get(url, stream=True, timeout=60) as resp:
             if resp.status_code == 401:
                 log("Authentication failed — check username and password.", "error")
-                prog(-1)
+                prog(PROG_FAIL)
                 return
             if resp.status_code == 404:
                 log(f"File not found on server (404): {fname}", "error")
                 log("Tip: try RINEX 3 format for this date.", "warn")
-                prog(-1)
+                prog(PROG_FAIL)
                 return
             resp.raise_for_status()
 
@@ -207,6 +217,7 @@ def download_worker(
         # ── Decompress ────────────────────────────────────────────────
         rinex_path = final_path   # path of the decompressed RINEX file
         if decompress:
+            status("Decompressing ...")
             log("Decompressing .gz ...")
             try:
                 with gzip.open(gz_path, "rb") as f_in, open(final_path, "wb") as f_out:
@@ -223,15 +234,16 @@ def download_worker(
             except Exception as e:
                 log(f"Decompression error: {e}", "error")
                 log(f"Raw .gz file kept: {gz_path}", "warn")
-                prog(-1)
+                prog(PROG_FAIL)
                 return
         else:
             log(f"Done (.gz kept): {gz_path}", "ok")
 
         # ── GPS-SIM generation ────────────────────────────────────────
         if gpssim_params and decompress:
+            status("Running gps-sdr-sim — this can take several minutes ...")
             log("\n── GPS-SIM ─────────────────────────────────────────────")
-            gpssim_worker(
+            ok = gpssim_worker(
                 exe_path      = gpssim_params["exe"],
                 brdc_file     = rinex_path,
                 lat           = gpssim_params["lat"],
@@ -243,16 +255,21 @@ def download_worker(
                 dest_dir      = dest_dir,
                 log_q         = log_q,
             )
+            if not ok:
+                prog(PROG_FAIL)
+                return
+
+        prog(PROG_DONE)
 
     except requests.exceptions.ConnectionError:
         log("Connection error — check your internet connection.", "error")
-        prog(-1)
+        prog(PROG_FAIL)
     except requests.exceptions.Timeout:
         log("Timeout — server did not respond.", "error")
-        prog(-1)
+        prog(PROG_FAIL)
     except Exception as e:
         log(f"Unexpected error: {e}", "error")
-        prog(-1)
+        prog(PROG_FAIL)
 
 
 # ---------------------------------------------------------------------------
@@ -668,13 +685,15 @@ class BRDCApp(tk.Tk):
         try:
             while True:
                 val = self._prog_q.get_nowait()
-                if val < 0:
-                    self._prog_var.set(0)
-                    self._set_status("Error — see log panel.")
-                    self._dl_btn.config(state="normal")
-                elif val == 100:
+                if isinstance(val, tuple):
+                    self._set_status(val[1])
+                elif val == PROG_DONE:
                     self._prog_var.set(100)
                     self._set_status("Done.")
+                    self._dl_btn.config(state="normal")
+                elif val == PROG_FAIL:
+                    self._prog_var.set(0)
+                    self._set_status("Error — see log panel.")
                     self._dl_btn.config(state="normal")
                 else:
                     self._prog_var.set(val)
