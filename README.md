@@ -20,7 +20,9 @@ A Windows GUI application that downloads GPS broadcast ephemeris (BRDC) files fr
 - **GPS-SIM output:** generates `.C8` + `.TXT` files ready for PortaPack Mayhem
   - Configurable latitude, longitude, height, sample rate, duration
   - Default TX parameters pre-filled (GPS L1: 1575.420 MHz)
-- NASA Earthdata Login authentication
+  - Shows the estimated `.C8` size and checks free disk space before starting
+- **Cancel** button stops a running download or `gps-sdr-sim` run and removes the partial file
+- NASA Earthdata Login authentication, optionally read from `.netrc`
 - Auto-installs `requests` dependency on first run
 
 ## Requirements
@@ -58,7 +60,14 @@ sample_rate=2600000
 ### Getting gps-sdr-sim
 
 Download or compile from: https://github.com/osqzss/gps-sdr-sim  
-Point the app to `gps-sdr-sim.exe` using the Browse button.
+The app finds `gps-sdr-sim.exe` automatically if it is in a `gps-sdr-sim` folder next to
+this project's folder, or anywhere on `PATH`. Otherwise point to it with the Browse button.
+
+### File size
+
+`.C8` files are large: sample rate × duration × 2 bytes. The default 2.6 MHz × 300 s is
+about 1.5 GB. The app shows the estimate next to the sample rate and refuses to start if the
+destination drive does not have enough free space.
 
 ### Default Parameters
 
@@ -83,7 +92,15 @@ Point the app to `gps-sdr-sim.exe` using the Browse button.
 CDDIS requires a free Earthdata account. Register at:  
 https://urs.earthdata.nasa.gov/users/new
 
-Your credentials are **never stored** — entered each session in the GUI.
+The app **never stores** your credentials. Enter them in the GUI each session, or put them in
+a `.netrc` file (the standard used by NASA's own tools) and the app will fill them in at startup.
+Create `%USERPROFILE%\_netrc` (or `.netrc`) containing:
+
+```
+machine urs.earthdata.nasa.gov login YOUR_USERNAME password YOUR_PASSWORD
+```
+
+This file holds your password in plain text — keep it private.
 
 ## License
 

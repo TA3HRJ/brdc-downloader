@@ -7,6 +7,9 @@ Requires Earthdata Login (https://urs.earthdata.nasa.gov)
 GPS-SIM generation requires gps-sdr-sim (https://github.com/osqzss/gps-sdr-sim)
 """
 
+# Keeps "X | None" annotations from being evaluated, so the app runs on Python 3.8+
+from __future__ import annotations
+
 # Auto-install missing dependencies before anything else
 import subprocess, sys
 
@@ -25,6 +28,7 @@ import requests
 import gzip
 import shutil
 import os
+import netrc
 from datetime import datetime, date
 import calendar
 import queue
@@ -35,8 +39,9 @@ GPS_L1_HZ     = 1575420000
 
 # Progress-queue messages: ints 0–100 move the bar, ("status", text) updates the
 # status line, and exactly one of these ends the job and re-enables the button.
-PROG_FAIL = -1
-PROG_DONE = "done"
+PROG_FAIL   = -1
+PROG_DONE   = "done"
+PROG_CANCEL = "cancel"
 
 SAMPLE_RATES = {
     "2.6 MHz  (recommended)": 2600000,
@@ -86,6 +91,57 @@ def date_to_doy(year: int, month: int, day: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+def resolve_exe(path: str) -> str | None:
+    """Full path of an executable given as a file path or a bare name on PATH."""
+    if os.path.isfile(path):
+        return path
+    return shutil.which(path)
+
+
+def c8_size_bytes(sample_rate: int, duration: int) -> int:
+    """gps-sdr-sim -b 8 writes one signed byte each for I and Q per sample."""
+    return sample_rate * duration * 2
+
+
+def fmt_size(n: float) -> str:
+    for unit in ("B", "KB", "MB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}"
+        n /= 1024
+    return f"{n:.2f} GB"
+
+
+def load_netrc_credentials() -> tuple[str, str] | None:
+    """Earthdata login from ~/.netrc or ~/_netrc, the files NASA's own tools use."""
+    for name in (".netrc", "_netrc"):
+        path = os.path.join(os.path.expanduser("~"), name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            auth = netrc.netrc(path).authenticators(EARTHDATA_HOST)
+        except (netrc.NetrcParseError, OSError):
+            continue
+        if auth and auth[0] and auth[2]:
+            return auth[0], auth[2]
+    return None
+
+
+class Job:
+    """State shared between the GUI and one worker run, so the GUI can stop it."""
+    def __init__(self):
+        self.cancel = threading.Event()
+        self.proc = None   # gps-sdr-sim subprocess while it runs
+
+    def stop(self):
+        self.cancel.set()
+        proc = self.proc
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+
+# ---------------------------------------------------------------------------
 # GPS-SIM worker  (called after successful BRDC download)
 # ---------------------------------------------------------------------------
 def gpssim_worker(
@@ -97,6 +153,7 @@ def gpssim_worker(
     output_prefix: str,
     dest_dir: str,
     log_q: queue.Queue,
+    job: Job,
 ) -> bool:
     def log(msg, tag="info"):
         log_q.put((msg, tag))
@@ -104,13 +161,14 @@ def gpssim_worker(
     c8_path  = os.path.join(dest_dir, f"{output_prefix}.C8")
     txt_path = os.path.join(dest_dir, f"{output_prefix}.TXT")
 
-    if not os.path.isfile(exe_path):
+    exe = resolve_exe(exe_path)
+    if not exe:
         log(f"gps-sdr-sim not found: {exe_path}", "error")
         log("Download from: https://github.com/osqzss/gps-sdr-sim", "warn")
         return False
 
     cmd = [
-        exe_path,
+        exe,
         "-e", brdc_file,
         "-l", f"{lat},{lon},{height}",
         "-b", "8",
@@ -129,11 +187,21 @@ def gpssim_worker(
             stderr=subprocess.STDOUT,
             text=True,
         )
+        job.proc = proc
+        if job.cancel.is_set():   # Cancel pressed while the process was starting
+            proc.terminate()
         for line in proc.stdout:
             line = line.rstrip()
             if line:
                 log(f"  {line}")
         proc.wait()
+        job.proc = None
+
+        if job.cancel.is_set():
+            if os.path.isfile(c8_path):
+                os.remove(c8_path)
+                log(f"Partial file removed: {c8_path}", "warn")
+            return False
 
         if proc.returncode != 0:
             log(f"gps-sdr-sim exited with code {proc.returncode}", "error")
@@ -167,6 +235,7 @@ def download_worker(
     gpssim_params: dict | None,
     log_q: queue.Queue,
     prog_q: queue.Queue,
+    job: Job,
 ):
     def log(msg, tag="info"):
         log_q.put((msg, tag))
@@ -176,6 +245,10 @@ def download_worker(
 
     def status(msg):
         prog_q.put(("status", msg))
+
+    def cancelled():
+        log("Cancelled by user.", "warn")
+        prog(PROG_CANCEL)
 
     gz_path    = os.path.join(dest_dir, fname)
     final_name = fname[:-3] if fname.endswith(".gz") else fname
@@ -205,11 +278,18 @@ def download_worker(
 
             with open(gz_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=65536):
+                    if job.cancel.is_set():
+                        break
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total:
                             prog(int(downloaded * 100 / total))
+
+        if job.cancel.is_set():
+            os.remove(gz_path)
+            cancelled()
+            return
 
         prog(100)
         log(f"Saved: {gz_path}", "ok")
@@ -241,6 +321,9 @@ def download_worker(
 
         # ── GPS-SIM generation ────────────────────────────────────────
         if gpssim_params and decompress:
+            if job.cancel.is_set():
+                cancelled()
+                return
             status("Running gps-sdr-sim — this can take several minutes ...")
             log("\n── GPS-SIM ─────────────────────────────────────────────")
             ok = gpssim_worker(
@@ -254,9 +337,13 @@ def download_worker(
                 output_prefix = gpssim_params["prefix"],
                 dest_dir      = dest_dir,
                 log_q         = log_q,
+                job           = job,
             )
             if not ok:
-                prog(PROG_FAIL)
+                if job.cancel.is_set():
+                    cancelled()
+                else:
+                    prog(PROG_FAIL)
                 return
 
         prog(PROG_DONE)
@@ -286,7 +373,10 @@ class BRDCApp(tk.Tk):
         self._log_q:  queue.Queue = queue.Queue()
         self._prog_q: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
+        self._job: Job | None = None
         self._build_ui()
+        self._load_netrc()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_queues()
 
     # ------------------------------------------------------------------
@@ -394,8 +484,9 @@ class BRDCApp(tk.Tk):
         ttk.Label(sim_lf, text="gps-sdr-sim:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         _default_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                     "..", "gps-sdr-sim", "gps-sdr-sim.exe")
-        _default_exe = os.path.normpath(_default_exe) if os.path.isfile(
-            os.path.normpath(_default_exe)) else "gps-sdr-sim.exe"
+        _default_exe = os.path.normpath(_default_exe)
+        if not os.path.isfile(_default_exe):
+            _default_exe = shutil.which("gps-sdr-sim") or "gps-sdr-sim.exe"
         self._exe_var = tk.StringVar(value=_default_exe)
         self._exe_entry = ttk.Entry(sim_lf, textvariable=self._exe_var, width=30)
         self._exe_entry.grid(row=1, column=1, columnspan=2, sticky="ew", padx=(4, 0), pady=(6, 0))
@@ -430,6 +521,14 @@ class BRDCApp(tk.Tk):
                                       values=list(SAMPLE_RATES.keys()),
                                       state="readonly", width=22)
         self._sr_combo.grid(row=4, column=1, columnspan=2, sticky="w", padx=(4, 0), pady=(4, 0))
+
+        # Estimated .C8 size — these files get large fast (2.6 MHz × 300 s ≈ 1.5 GB)
+        self._size_var = tk.StringVar()
+        ttk.Label(sim_lf, textvariable=self._size_var, foreground="gray").grid(
+            row=4, column=3, sticky="w", padx=(4, 0), pady=(4, 0))
+        self._dur_var.trace_add("write", self._update_size)
+        self._sr_var.trace_add("write", self._update_size)
+        self._update_size()
 
         # Output prefix
         ttk.Label(sim_lf, text="Output name:").grid(row=5, column=0, sticky="w", pady=(4, 0))
@@ -468,6 +567,9 @@ class BRDCApp(tk.Tk):
 
         self._dl_btn = ttk.Button(btn_frm, text="Download", command=self._start_download)
         self._dl_btn.pack(side="left")
+        self._cancel_btn = ttk.Button(btn_frm, text="Cancel", command=self._cancel,
+                                      state="disabled")
+        self._cancel_btn.pack(side="left", padx=(8, 0))
         ttk.Button(btn_frm, text="Open Folder", command=self._open_dest).pack(
             side="left", padx=(8, 0))
 
@@ -504,7 +606,26 @@ class BRDCApp(tk.Tk):
     def _on_sim_toggle(self):
         state = "normal" if self._sim_var.get() else "disabled"
         for w in self._sim_widgets:
-            w.config(state=state)
+            # "normal" would make the combobox accept free text that SAMPLE_RATES can't map
+            w.config(state="readonly" if w is self._sr_combo and state == "normal" else state)
+
+    def _update_size(self, *_):
+        try:
+            dur = int(self._dur_var.get())
+            if dur <= 0:
+                raise ValueError
+        except ValueError:
+            self._size_var.set("")
+            return
+        size = c8_size_bytes(SAMPLE_RATES[self._sr_var.get()], dur)
+        self._size_var.set(f"≈ {fmt_size(size)} .C8")
+
+    def _load_netrc(self):
+        creds = load_netrc_credentials()
+        if creds:
+            self._user_var.set(creds[0])
+            self._pass_var.set(creds[1])
+            self._log("Earthdata credentials loaded from .netrc", "ok")
 
     def _on_decomp_toggle(self):
         state = "normal" if self._decomp_var.get() else "disabled"
@@ -648,28 +769,69 @@ class BRDCApp(tk.Tk):
                 "duration":    dur,
                 "prefix":      prefix,
             }
+            if not resolve_exe(gpssim_params["exe"]):
+                messagebox.showerror(
+                    "gps-sdr-sim not found",
+                    f"Not a file and not on PATH:\n{gpssim_params['exe']}\n\n"
+                    "Use Browse… to select gps-sdr-sim.exe.")
+                return
+            need = c8_size_bytes(gpssim_params["sample_rate"], dur)
+            free = shutil.disk_usage(dest).free
+            if need > free:
+                messagebox.showerror(
+                    "Not enough disk space",
+                    f"The .C8 file needs about {fmt_size(need)}, "
+                    f"but only {fmt_size(free)} is free in:\n{dest}")
+                return
 
         self._prog_var.set(0)
         self._set_status(f"Downloading: {fname}")
         self._dl_btn.config(state="disabled")
+        self._cancel_btn.config(state="normal")
         self._log(f"\n── {datetime.now().strftime('%H:%M:%S')} ─────────────────────────────────")
         self._log(f"Date: {year}-{month:02d}-{day:02d}  DOY:{doy}  Format:{fmt_key}")
         if gpssim_params:
             self._log(
                 f"GPS-SIM: lat={gpssim_params['lat']}  lon={gpssim_params['lon']}"
                 f"  h={gpssim_params['height']}m"
-                f"  sr={gpssim_params['sample_rate']}  dur={gpssim_params['duration']}s")
+                f"  sr={gpssim_params['sample_rate']}  dur={gpssim_params['duration']}s"
+                f"  (.C8 ≈ {fmt_size(need)})")
 
+        self._job = Job()
         self._worker = threading.Thread(
             target=download_worker,
             args=(username, password, url, fname, dest,
                   self._decomp_var.get(),
                   self._brdc_var.get() and self._decomp_var.get(),
                   gpssim_params,
-                  self._log_q, self._prog_q),
+                  self._log_q, self._prog_q, self._job),
             daemon=True,
         )
         self._worker.start()
+
+    def _cancel(self):
+        if self._job:
+            self._job.stop()
+            self._cancel_btn.config(state="disabled")
+            self._set_status("Cancelling ...")
+
+    def _finish(self, status: str):
+        self._set_status(status)
+        self._dl_btn.config(state="normal")
+        self._cancel_btn.config(state="disabled")
+        self._job = None
+
+    def _on_close(self):
+        if self._worker and self._worker.is_alive():
+            if not messagebox.askyesno(
+                    "Quit", "A job is still running. Cancel it and quit?"):
+                return
+            # The worker thread is a daemon and dies with us, but gps-sdr-sim is a
+            # separate process and would keep writing the .C8 file — stop it first.
+            if self._job:
+                self._job.stop()
+            self._worker.join(timeout=5)   # let it delete the partial file
+        self.destroy()
 
     # ------------------------------------------------------------------
     # Queue polling
@@ -689,12 +851,13 @@ class BRDCApp(tk.Tk):
                     self._set_status(val[1])
                 elif val == PROG_DONE:
                     self._prog_var.set(100)
-                    self._set_status("Done.")
-                    self._dl_btn.config(state="normal")
+                    self._finish("Done.")
+                elif val == PROG_CANCEL:
+                    self._prog_var.set(0)
+                    self._finish("Cancelled.")
                 elif val == PROG_FAIL:
                     self._prog_var.set(0)
-                    self._set_status("Error — see log panel.")
-                    self._dl_btn.config(state="normal")
+                    self._finish("Error — see log panel.")
                 else:
                     self._prog_var.set(val)
         except queue.Empty:
